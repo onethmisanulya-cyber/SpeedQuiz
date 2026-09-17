@@ -113,7 +113,8 @@
     document.getElementById('player-count').textContent = count;
     var can = count >= 2;
     startBtn.disabled = !can;
-    startBtn.textContent = can ? 'Start game' : 'Start (need ≥ 2 players)';
+    startBtn.textContent = can ? 'Start game' : 'Start (need \u2265 2 players, have ' + count + ')';
+    startBtn.title = can ? '' : 'Connected non-spectators: ' + count + ' / 2 required to start.';
   }
 
   // ---------- question ----------
@@ -155,6 +156,8 @@
     }
     tick();
     timerInt = setInterval(tick, 100);
+    answerInput.placeholder = q.type === 'typing' ? 'Type exactly (case-sensitive)' : 'Type your answer, press Enter (1,000 = 1000 OK)';
+    answerInput.title = 'Match: 1-letter typo OK for answers 5+ chars; numbers ignore commas/spaces';
     setTimeout(function () { answerInput.focus(); }, 50);
   });
 
@@ -185,7 +188,7 @@
         answerInput.disabled = true;
       } else if (res.reason === 'wrong' || res.reason === 'locked') {
         var s = Math.ceil((res.retryInMs || 2000) / 1000);
-        answerMsg.textContent = '✗ Wrong — try again in ' + s + 's';
+        answerMsg.textContent = '✗ Wrong — retry in ' + s + 's (timer still running)';
         answerMsg.className = 'answer-msg bad';
         answerMsg.hidden = false;
         answerInput.classList.remove('shake');
@@ -239,7 +242,11 @@
       var pts = document.createElement('span');
       pts.className = 'pts';
       if (x.correct) {
-        pts.textContent = '+' + x.points + '  (' + (x.elapsed / 1000).toFixed(1) + 's)';
+        var detail = (typeof x.base === 'number' && typeof x.bonus === 'number')
+          ? '+' + x.points + ' (base ' + x.base + ' + streak ' + x.bonus + ', ' + (x.elapsed / 1000).toFixed(1) + 's)'
+          : '+' + x.points + '  (' + (x.elapsed / 1000).toFixed(1) + 's)';
+        pts.textContent = detail;
+        pts.title = 'Base speed points + consecutive-correct streak bonus. Last question is 2x.';
         pts.style.color = x.color;
       } else {
         pts.textContent = '— no points';

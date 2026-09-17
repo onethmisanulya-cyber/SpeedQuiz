@@ -4,7 +4,8 @@
   "description": "Speed Quiz — real-time multiplayer browser quiz game",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "validate": "node scripts/validate-questions.js"
   },
   "engines": {
     "node": ">=20"
