@@ -239,6 +239,12 @@ function selectQuestions() {
 /** rooms: code -> room */
 const rooms = new Map();
 
+function parseLockoutMs(value) {
+  const n = parseInt(value, 10);
+  if (ALLOWED_LOCKOUT_MS.has(n)) return n;
+  return DEFAULT_LOCKOUT_MS;
+}
+
 function parseQuestionTimeMs(value) {
   const n = parseInt(value, 10);
   if (ALLOWED_QUESTION_TIME_MS.has(n)) return n;
@@ -261,6 +267,7 @@ function createRoom(questionTimeMs) {
   const room = {
     code,
     phase: 'lobby', // lobby | question | reveal | leaderboard | final
+    lockoutMs: parseLockoutMs(lockoutMs),
     questionTimeMs: parseQuestionTimeMs(questionTimeMs),
     players: new Map(), // token -> player
     sockets: new Map(), // socketId -> token
@@ -275,6 +282,11 @@ function createRoom(questionTimeMs) {
     colorCursor: 0,
     emptySince: null,
     cleanupTimer: null,
+    phaseEndsAt: 0, // absolute timestamp for reveal/leaderboard countdowns
+    phaseServerTime: 0,
+    lastReveal: null, // last reveal payload (for catch-up)
+    lastLeaderboard: null, // last leaderboard payload (for catch-up)
+    lastFinal: null, // last final payload (for catch-up)
   };
   rooms.set(code, room);
   return room;
@@ -350,6 +362,7 @@ function lobbyState(room) {
     })),
     hostToken: room.hostToken,
     canStart: activePlayers(room).length >= 2,
+    lockoutMs: room.lockoutMs,
     questionTimeMs: room.questionTimeMs,
   };
 }
@@ -400,6 +413,11 @@ function startGame(room) {
   }
   room.questions = selectQuestions();
   room.qIndex = -1;
+  room.phaseEndsAt = 0;
+  room.phaseServerTime = 0;
+  room.lastReveal = null;
+  room.lastLeaderboard = null;
+  room.lastFinal = null;
   snapshotRanks(room);
   // prevRanks cleared so first leaderboard shows no changes
   room.prevRanks = new Map();
@@ -437,7 +455,7 @@ function nextQuestion(room) {
   room.timer = setTimeout(() => endQuestion(room, false), questionTimeMs);
 }
 
-function sendProgress(room) {
+function progressPayload(room) {
   const total = activePlayers(room).length;
   const answered = [...room.questionResults.values()].filter((r) => r.correct).length;
   const answeredList = [...room.questionResults.entries()]
@@ -447,7 +465,11 @@ function sendProgress(room) {
       return p ? { token, name: p.name, color: p.color } : null;
     })
     .filter(Boolean);
-  io.to(room.code).emit('progress', { answered, total, answeredList });
+  return { answered, total, answeredList };
+}
+
+function sendProgress(room) {
+  io.to(room.code).emit('progress', progressPayload(room));
 }
 
 function scoreFor(elapsed, streakAfter, isLast) {
@@ -468,8 +490,9 @@ function handleAnswer(room, player, rawAnswer) {
     return { ok: false, reason: 'rate-limited' };
   }
   player.answerTimes.push(now);
-  // Lockout after wrong answer
-  if (player.lockoutUntil && now < player.lockoutUntil) {
+  const lockoutMs = parseLockoutMs(room.lockoutMs);
+  // Lockout after wrong answer (0 = retry immediately)
+  if (lockoutMs > 0 && player.lockoutUntil && now < player.lockoutUntil) {
     return { ok: false, reason: 'locked', retryInMs: player.lockoutUntil - now };
   }
   // Already correct — only first correct counts
@@ -497,17 +520,18 @@ function handleAnswer(room, player, rawAnswer) {
     }
     return { ok: true, correct: true, points, elapsed };
   }
-  // Wrong: lock out 2s, may retry. Streak resets only at question end? Spec: resets on a wrong/no answer.
-  // Reset streak immediately on a wrong answer (subsequent correct in same question still counts as new streak start).
+  // Wrong: optional lockout, then retry. Streak resets immediately.
   player.streak = 0;
-  player.lockoutUntil = now + LOCKOUT_MS;
-  return { ok: false, correct: false, reason: 'wrong', retryInMs: LOCKOUT_MS };
+  if (lockoutMs > 0) player.lockoutUntil = now + lockoutMs;
+  return { ok: false, correct: false, reason: 'wrong', retryInMs: lockoutMs };
 }
 
 function endQuestion(room, early) {
   if (room.phase !== 'question') return;
   clearRoomTimer(room);
   room.phase = 'reveal';
+  room.phaseServerTime = Date.now();
+  room.phaseEndsAt = room.phaseServerTime + REVEAL_TIME_MS;
   const q = room.questions[room.qIndex];
   // Anyone without a correct answer gets streak reset (wrong/no answer).
   for (const p of rosterPlayers(room)) {
@@ -535,7 +559,20 @@ function endQuestion(room, early) {
     answers: q.answers.slice(0, 5),
     results,
     early,
+    endsAt: room.phaseEndsAt,
+    serverTime: room.phaseServerTime,
+    next: 'leaderboard',
   });
+  room.lastReveal = {
+    index: room.qIndex,
+    total: room.questions.length,
+    answers: q.answers.slice(0, 5),
+    results,
+    early,
+    endsAt: room.phaseEndsAt,
+    serverTime: room.phaseServerTime,
+    next: 'leaderboard',
+  };
   room.timer = setTimeout(() => showLeaderboard(room), REVEAL_TIME_MS);
 }
 
@@ -543,13 +580,21 @@ function showLeaderboard(room) {
   if (room.phase !== 'reveal') return;
   clearRoomTimer(room);
   room.phase = 'leaderboard';
+  room.phaseServerTime = Date.now();
+  room.phaseEndsAt = room.phaseServerTime + LEADERBOARD_TIME_MS;
   const table = standings(room, true);
-  io.to(room.code).emit('leaderboard', {
+  const last = room.qIndex >= room.questions.length - 1;
+  const payload = {
     index: room.qIndex,
     total: room.questions.length,
     standings: table,
-    last: room.qIndex >= room.questions.length - 1,
-  });
+    last,
+    endsAt: room.phaseEndsAt,
+    serverTime: room.phaseServerTime,
+    next: last ? 'final' : 'question',
+  };
+  io.to(room.code).emit('leaderboard', payload);
+  room.lastLeaderboard = payload;
   snapshotRanks(room);
   room.timer = setTimeout(() => nextQuestion(room), LEADERBOARD_TIME_MS);
 }
@@ -558,10 +603,12 @@ function endToFinal(room) {
   clearRoomTimer(room);
   room.phase = 'final';
   const table = standings(room, true);
-  io.to(room.code).emit('final', {
+  const payload = {
     standings: table,
     podium: table.slice(0, 3),
-  });
+  };
+  io.to(room.code).emit('final', payload);
+  room.lastFinal = payload;
 }
 
 // ---------------- Express + Socket.IO ----------------
@@ -817,9 +864,14 @@ function sendCatchUp(room, player, socket) {
       timeMs: roomQuestionTimeMs(room),
       lastQuestion: room.qIndex === room.questions.length - 1,
     });
-    const total = activePlayers(room).length;
-    const answered = [...room.questionResults.values()].filter((r) => r.correct).length;
-    socket.emit('progress', { answered, total, answeredList: [] });
+    socket.emit('progress', progressPayload(room));
+  } else if (room.phase === 'reveal' && room.lastReveal) {
+    socket.emit('reveal', room.lastReveal);
+    socket.emit('progress', progressPayload(room));
+  } else if (room.phase === 'leaderboard' && room.lastLeaderboard) {
+    socket.emit('leaderboard', room.lastLeaderboard);
+  } else if (room.phase === 'final' && room.lastFinal) {
+    socket.emit('final', room.lastFinal);
   }
 }
 

@@ -84,7 +84,7 @@
     if (state.phase === 'lobby' || state.phase === 'final') renderLobby(state);
     document.getElementById('spectate-note').hidden = !amSpectator;
   });
-  socket.on('back-to-lobby', function () { resetAnswerUI(); });
+  socket.on('back-to-lobby', function () { clearInterval(timerInt); resetAnswerUI(); });
 
   function renderLobby(state) {
     show('lobby');
@@ -126,20 +126,118 @@
 
   // ---------- question ----------
   var timerInt = null;
+
+  // Shared countdown for reveal/leaderboard so players know when the next
+  // phase starts. Reuses timerInt (only one phase is visible at a time).
+  function startPhaseCountdown(fillId, cdId, endsAt, serverTime, nextLabel) {
+    clearInterval(timerInt);
+    var fill = document.getElementById(fillId);
+    var cd = document.getElementById(cdId);
+    if (!fill || !cd || !endsAt || !serverTime) {
+      if (fill) fill.style.width = '0%';
+      if (cd) cd.textContent = '';
+      return;
+    }
+    var offset = Date.now() - serverTime;
+    var total = endsAt - serverTime;
+    function tick() {
+      var remain = Math.max(0, endsAt - (Date.now() - offset));
+      var frac = total > 0 ? remain / total : 0;
+      fill.style.width = (frac * 100).toFixed(1) + '%';
+      fill.classList.toggle('low', remain < 2000);
+      cd.textContent = 'Next: ' + nextLabel + ' in ' + (remain / 1000).toFixed(remain < 5000 ? 1 : 0) + 's';
+      if (remain <= 0) clearInterval(timerInt);
+    }
+    tick();
+    timerInt = setInterval(tick, 100);
+  }
   var answerInput = document.getElementById('answer-input');
   var answerMsg = document.getElementById('answer-msg');
+  var qPromptEl = document.getElementById('q-prompt');
   var locked = false;
+  var isTypingQuestion = false;
+  var defaultPlaceholder = answerInput.placeholder;
+
+  function setTypingProtection(isTyping) {
+    isTypingQuestion = isTyping;
+    if (qPromptEl) qPromptEl.classList.toggle('no-copy', isTyping);
+    if (isTyping) {
+      answerInput.setAttribute('autocapitalize', 'off');
+      answerInput.setAttribute('autocorrect', 'off');
+      answerInput.setAttribute('spellcheck', 'false');
+      answerInput.placeholder = 'Type it out — paste/shortcuts disabled';
+    } else {
+      answerInput.placeholder = defaultPlaceholder;
+    }
+  }
+
+  function blockTypingShortcut(msg) {
+    answerMsg.textContent = msg || 'Paste/shortcuts disabled — please type the answer';
+    answerMsg.className = 'answer-msg bad';
+    answerMsg.hidden = false;
+  }
+
+  // Block paste/drop into the answer box for typing questions.
+  answerInput.addEventListener('paste', function (e) {
+    if (!isTypingQuestion) return;
+    e.preventDefault();
+    blockTypingShortcut();
+  });
+  answerInput.addEventListener('drop', function (e) {
+    if (!isTypingQuestion) return;
+    e.preventDefault();
+    blockTypingShortcut();
+  });
+  answerInput.addEventListener('contextmenu', function (e) {
+    if (!isTypingQuestion) return;
+    e.preventDefault();
+  });
+  answerInput.addEventListener('keydown', function (e) {
+    if (!isTypingQuestion) return;
+    var key = (e.key || '').toLowerCase();
+    // Ctrl/Cmd+V (paste), Ctrl/Cmd+X (cut), Ctrl/Cmd+C not useful in input
+    // but block paste paths; Shift+Insert is paste on Windows/Linux.
+    if (((e.ctrlKey || e.metaKey) && (key === 'v' || key === 'x')) ||
+        (e.shiftKey && e.key === 'Insert')) {
+      e.preventDefault();
+      blockTypingShortcut();
+    }
+  });
+  // Block copying the prompt text for typing questions.
+  if (qPromptEl) {
+    qPromptEl.addEventListener('copy', function (e) {
+      if (isTypingQuestion) e.preventDefault();
+    });
+    qPromptEl.addEventListener('cut', function (e) {
+      if (isTypingQuestion) e.preventDefault();
+    });
+    qPromptEl.addEventListener('contextmenu', function (e) {
+      if (isTypingQuestion) e.preventDefault();
+    });
+    qPromptEl.addEventListener('dragstart', function (e) {
+      if (isTypingQuestion) e.preventDefault();
+    });
+    qPromptEl.addEventListener('keydown', function (e) {
+      if (!isTypingQuestion) return;
+      var key = (e.key || '').toLowerCase();
+      if ((e.ctrlKey || e.metaKey) && (key === 'c' || key === 'x' || key === 'v' || key === 'insert')) {
+        e.preventDefault();
+      }
+    });
+  }
 
   function resetAnswerUI() {
     answerInput.value = '';
     answerInput.disabled = false;
     answerMsg.hidden = true;
     locked = false;
+    setTypingProtection(false);
   }
 
   socket.on('question', function (q) {
     show('question');
     resetAnswerUI();
+    setTypingProtection(q.type === 'typing');
     document.getElementById('q-num').textContent = 'Q ' + (q.index + 1) + ' / ' + q.total;
     document.getElementById('q-type').textContent = q.type;
     document.getElementById('q-last').hidden = !q.lastQuestion;
@@ -267,11 +365,13 @@
       li.appendChild(pts);
       ul.appendChild(li);
     });
+    startPhaseCountdown('r-timer-fill', 'r-countdown', r.endsAt, r.serverTime, 'leaderboard');
   });
 
   socket.on('leaderboard', function (d) {
     show('leaderboard');
     renderStandings(document.getElementById('l-list'), d.standings);
+    startPhaseCountdown('l-timer-fill', 'l-countdown', d.endsAt, d.serverTime, d.next === 'final' ? 'final results' : 'next question');
   });
 
   function renderStandings(ol, standings) {
@@ -302,6 +402,7 @@
   }
 
   socket.on('final', function (d) {
+    clearInterval(timerInt);
     show('final');
     var pod = document.getElementById('podium');
     pod.innerHTML = '';

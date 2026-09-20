@@ -75,8 +75,9 @@ in `localStorage`.
 - Streak bonus: `+100 × (consecutive correct − 1)` — your 2nd correct answer
   in a row earns +100 extra, 3rd earns +200, etc. Any wrong answer or a
   question with no correct answer resets the streak to 0.
-- Wrong answer: locked out for 2 s ("wrong, try again"), then retry as often
-  as you like until the timer ends.
+- Wrong answer: optional lockout, then retry until the timer ends. The host
+  picks this when creating the game: none, 1 s, 2 s (default), or 3 s.
+  Spam is always capped at 5 answers/second.
 - The last question is worth **double** (base + streak bonus, then ×2).
 
 ## Answer matching
