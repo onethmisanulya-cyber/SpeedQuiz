@@ -113,8 +113,13 @@
     document.getElementById('player-count').textContent = count;
     var can = count >= 2;
     startBtn.disabled = !can;
-    startBtn.textContent = can ? 'Start game' : 'Start (need \u2265 2 players, have ' + count + ')';
+    startBtn.textContent = can ? 'Start game' : 'Start (need ≥ 2 players, have ' + count + ')';
     startBtn.title = can ? '' : 'Connected non-spectators: ' + count + ' / 2 required to start.';
+    var note = document.getElementById('qtime-note');
+    if (note) {
+      var qSec = (state.questionTimeMs || 15000) / 1000;
+      note.textContent = 'Question time: ' + qSec + 's per question.';
+    }
   }
 
   // ---------- question ----------
@@ -142,9 +147,9 @@
     clearInterval(timerInt);
     var fill = document.getElementById('timer-fill');
     var cd = document.getElementById('q-countdown');
-    var total = q.endsAt - q.serverTime;
+    var total = q.timeMs || (q.endsAt - q.serverTime);
     function tick() {
-      var remain = Math.max(0, deadline - Date.now());
+      var remain = Math.max(0, deadline - (Date.now() - offset));
       var frac = total > 0 ? remain / total : 0;
       fill.style.width = (frac * 100).toFixed(1) + '%';
       fill.classList.toggle('low', remain < 5000);

@@ -18,6 +18,15 @@
       <span>Your display name</span>
       <input id="create-name" maxlength="20" autocomplete="nickname" placeholder="e.g. QuizMaster">
     </label>
+    <label class="field">
+      <span>Seconds per question</span>
+      <select id="create-qtime">
+        <option value="10000">10 seconds</option>
+        <option value="15000" selected>15 seconds (default)</option>
+        <option value="20000">20 seconds</option>
+        <option value="30000">30 seconds</option>
+      </select>
+    </label>
     <button id="create-btn" class="btn primary big">Create Game</button>
   </section>
 
@@ -54,8 +63,9 @@
     clearError();
     var name = document.getElementById('create-name').value.trim();
     if (!name) return showError('Enter a display name first.');
+    var questionTimeMs = parseInt(document.getElementById('create-qtime').value, 10);
     var btn = this; busy(btn, true);
-    socket.emit('create-room', { name: name }, function (res) {
+    socket.emit('create-room', { name: name, questionTimeMs: questionTimeMs }, function (res) {
       busy(btn, false);
       if (!res || !res.ok) return showError((res && res.error) || 'Could not create room.');
       storeCreds(res.room, res.token, name);
